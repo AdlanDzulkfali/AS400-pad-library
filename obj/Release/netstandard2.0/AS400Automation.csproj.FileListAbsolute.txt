@@ -1,0 +1,10 @@
+D:\PROJECTS\AS400Automation\bin\Release\netstandard2.0\AS400Automation.deps.json
+D:\PROJECTS\AS400Automation\bin\Release\netstandard2.0\AS400Automation.dll
+D:\PROJECTS\AS400Automation\bin\Release\netstandard2.0\AS400Automation.pdb
+D:\PROJECTS\AS400Automation\obj\Release\netstandard2.0\AS400Automation.csproj.AssemblyReference.cache
+D:\PROJECTS\AS400Automation\obj\Release\netstandard2.0\AS400Automation.GeneratedMSBuildEditorConfig.editorconfig
+D:\PROJECTS\AS400Automation\obj\Release\netstandard2.0\AS400Automation.AssemblyInfoInputs.cache
+D:\PROJECTS\AS400Automation\obj\Release\netstandard2.0\AS400Automation.AssemblyInfo.cs
+D:\PROJECTS\AS400Automation\obj\Release\netstandard2.0\AS400Automation.csproj.CoreCompileInputs.cache
+D:\PROJECTS\AS400Automation\obj\Release\netstandard2.0\AS400Automation.dll
+D:\PROJECTS\AS400Automation\obj\Release\netstandard2.0\AS400Automation.pdb

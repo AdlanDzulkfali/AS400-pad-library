@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net472;netstandard2.0</TargetFrameworks>
+    <AssemblyName>AS400Automation</AssemblyName>
+    <RootNamespace>AS400Automation</RootNamespace>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <Version>1.0.0</Version>
+    <Authors>Senior .NET AS400 Systems Engineer</Authors>
+    <Company>AS400 Automation</Company>
+    <Product>AS400 TN5250 Client for Power Automate Desktop</Product>
+    <Description>Standalone C# TN5250 Telnet client library for IBM i / AS400 terminal automation via PowerShell and Power Automate Desktop</Description>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <Nullable>disable</Nullable>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <!-- .NET Framework 4.7.2 specific assembly references -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Net" />
+    <Reference Include="System.Net.Sockets" />
+  </ItemGroup>
+
+</Project>

@@ -5,5 +5,6 @@ D:\PROJECTS\AS400Automation\obj\Release\net472\AS400Automation.GeneratedMSBuildE
 D:\PROJECTS\AS400Automation\obj\Release\net472\AS400Automation.AssemblyInfoInputs.cache
 D:\PROJECTS\AS400Automation\obj\Release\net472\AS400Automation.AssemblyInfo.cs
 D:\PROJECTS\AS400Automation\obj\Release\net472\AS400Automation.csproj.CoreCompileInputs.cache
+D:\PROJECTS\AS400Automation\obj\Release\net472\AS400Automation.sourcelink.json
 D:\PROJECTS\AS400Automation\obj\Release\net472\AS400Automation.dll
 D:\PROJECTS\AS400Automation\obj\Release\net472\AS400Automation.pdb

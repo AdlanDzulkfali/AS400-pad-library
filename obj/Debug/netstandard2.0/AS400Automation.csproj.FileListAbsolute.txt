@@ -8,3 +8,4 @@ D:\PROJECTS\AS400Automation\obj\Debug\netstandard2.0\AS400Automation.AssemblyInf
 D:\PROJECTS\AS400Automation\obj\Debug\netstandard2.0\AS400Automation.csproj.CoreCompileInputs.cache
 D:\PROJECTS\AS400Automation\obj\Debug\netstandard2.0\AS400Automation.dll
 D:\PROJECTS\AS400Automation\obj\Debug\netstandard2.0\AS400Automation.pdb
+d:\PROJECTS\AS400Automation\obj\Debug\netstandard2.0\AS400Automation.sourcelink.json

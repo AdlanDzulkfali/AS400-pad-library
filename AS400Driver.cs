@@ -137,12 +137,13 @@ namespace AS400Automation
 
         /// <summary>
         /// Sends characters and attention identification (AID) control keys to the terminal screen.
+        /// If text is a control key name (e.g. "F3", "PageDown"), it is automatically recognized and sent as the AID key.
         /// </summary>
         /// <param name="sessionId">Active session ID handle.</param>
-        /// <param name="text">Text to type (may include inline tags like [Tab], [Enter], [F1]-[F24]).</param>
-        /// <param name="controlKey">Trailing control key (e.g. "Enter", "F1"-"F24", "PageUp", "PageDown", "Help", "Clear").</param>
+        /// <param name="text">Text to type (or key name, or empty string to only press the key).</param>
+        /// <param name="controlKey">Trailing control key (default: "Enter").</param>
         /// <returns>True on success.</returns>
-        public static bool SendKeys(string sessionId, string text, string controlKey = "Enter")
+        public static bool SendKeys(string sessionId, string text = "", string controlKey = "Enter")
         {
             try
             {
@@ -156,6 +157,17 @@ namespace AS400Automation
                 if (ThrowOnError) throw;
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Transmits a standalone attention identification (AID) control key without typing text (e.g. "Enter", "F3", "F12", "PageDown", "Clear", "Help").
+        /// </summary>
+        /// <param name="sessionId">Active session ID handle.</param>
+        /// <param name="controlKey">AID key name (default: "Enter").</param>
+        /// <returns>True on success.</returns>
+        public static bool SendKey(string sessionId, string controlKey = "Enter")
+        {
+            return SendKeys(sessionId, string.Empty, controlKey);
         }
 
         /// <summary>

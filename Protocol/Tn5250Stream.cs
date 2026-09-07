@@ -510,17 +510,26 @@ namespace AS400Automation.Protocol
                 byte aidCode = ResolveAidCode(controlKey);
                 string processedText = text ?? string.Empty;
 
-                // Also parse inline mnemonics: [ENTER], [TAB], [F1]-[F24], @E, @1-@24, [PAGEUP], [PAGEDOWN], [CLEAR], [HELP]
-                Match m = Regex.Match(processedText, @"(@[A-Z0-9]{1,2}|\[[A-Z0-9]+\])", RegexOptions.IgnoreCase);
-                if (m.Success)
+                // Check if text itself is just a standalone control key name (e.g. "F3", "PF3", "PageDown", "Clear", "Enter")
+                if (IsControlKeyName(processedText.Trim()) && (controlKey == null || controlKey.Equals("Enter", StringComparison.OrdinalIgnoreCase)))
                 {
-                    string tag = m.Value.ToUpperInvariant();
-                    byte parsedAid = ResolveAidCode(tag);
-                    if (parsedAid != Tn5250Constants.AID_NO_AID)
+                    aidCode = ResolveAidCode(processedText.Trim());
+                    processedText = string.Empty;
+                }
+                else
+                {
+                    // Also parse inline mnemonics: [ENTER], [TAB], [F1]-[F24], @E, @1-@24, [PAGEUP], [PAGEDOWN], [CLEAR], [HELP]
+                    Match m = Regex.Match(processedText, @"(@[A-Z0-9]{1,2}|\[[A-Z0-9]+\])", RegexOptions.IgnoreCase);
+                    if (m.Success)
                     {
-                        aidCode = parsedAid;
+                        string tag = m.Value.ToUpperInvariant();
+                        byte parsedAid = ResolveAidCode(tag);
+                        if (parsedAid != Tn5250Constants.AID_NO_AID)
+                        {
+                            aidCode = parsedAid;
+                        }
+                        processedText = processedText.Replace(m.Value, string.Empty);
                     }
-                    processedText = processedText.Replace(m.Value, string.Empty);
                 }
 
                 if (aidCode == Tn5250Constants.AID_NO_AID)
@@ -588,6 +597,19 @@ namespace AS400Automation.Protocol
                 throw new AS400Exception(AS400ErrorCode.SendKeysFailed,
                     $"Failed to transmit keystrokes on session '{SessionId}': {ex.Message}", SessionId, ex);
             }
+        }
+
+        private static bool IsControlKeyName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return false;
+            string clean = name.Trim().ToUpperInvariant().Replace("[", "").Replace("]", "");
+            if (clean == "ENTER" || clean == "CLEAR" || clean == "HELP" ||
+                clean == "PAGEUP" || clean == "PAGEDOWN" || clean == "ROLLUP" || clean == "ROLLDOWN" ||
+                clean == "PRINT" || clean == "@E" || clean == "@C" || clean == "@H" || clean == "@U" || clean == "@D")
+            {
+                return true;
+            }
+            return Regex.IsMatch(clean, @"^(?:PF|F|@)(\d{1,2})$");
         }
 
         private static byte ResolveAidCode(string key)

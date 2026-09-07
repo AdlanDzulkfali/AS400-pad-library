@@ -79,7 +79,7 @@ namespace AS400Automation
             }
         }
 
-        public bool SendKeys(string text, string controlKey = "Enter")
+        public bool SendKeys(string text = "", string controlKey = "Enter")
         {
             lock (_sessionLock)
             {
@@ -88,6 +88,11 @@ namespace AS400Automation
                 _protocolStream.SendKeystrokes(text, controlKey);
                 return true;
             }
+        }
+
+        public bool SendKey(string controlKey = "Enter")
+        {
+            return SendKeys(string.Empty, controlKey);
         }
 
         public bool SetCursor(int row, int col)

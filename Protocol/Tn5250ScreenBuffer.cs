@@ -374,5 +374,13 @@ namespace AS400Automation.Protocol
                 return fullScreen.IndexOf(targetText, comparison) >= 0;
             }
         }
+
+        /// <summary>
+        /// Reads the system message line (Row 24 or Row 27) where AS400 displays CPF error messages and status.
+        /// </summary>
+        public string GetSystemMessage()
+        {
+            return ReadSlice(Rows, 1, Columns).Trim();
+        }
     }
 }

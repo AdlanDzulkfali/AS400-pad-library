@@ -1,6 +1,6 @@
 is_global = true
 build_property.RootNamespace = AS400Automation
-build_property.ProjectDir = d:\PROJECTS\AS400Automation\
+build_property.ProjectDir = D:\PROJECTS\AS400Automation\
 build_property.EnableComHosting = 
 build_property.EnableGeneratedComInterfaceComImportInterop = 
 build_property.CsWinRTUseWindowsUIXamlProjections = false

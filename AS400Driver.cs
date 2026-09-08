@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using AS400Automation.Ipc;
 using AS400Automation.Protocol;
 
 namespace AS400Automation
@@ -8,6 +9,7 @@ namespace AS400Automation
     /// Static entry-point driver for AS400 / IBM i 5250 terminal automation.
     /// Designed for zero-configuration interop inside Power Automate Desktop (Free/Standard tier) and PowerShell.
     /// Thread-safe and manages multiple concurrent sessions identified by unique session IDs.
+    /// Supports both in-process direct mode and cross-process Named Pipe IPC mode.
     /// </summary>
     public static class AS400Driver
     {
@@ -23,6 +25,60 @@ namespace AS400Automation
         /// </summary>
         public static bool ThrowOnError { get; set; } = true;
 
+        /// <summary>
+        /// When true, driver calls are routed through a background Named Pipe daemon (AS400Daemon.exe).
+        /// This enables sessions to persist across separate PowerShell script actions inside Power Automate Desktop.
+        /// </summary>
+        public static bool UseIpc { get; set; } = false;
+
+        [ThreadStatic]
+        private static bool _disableIpcForCurrentThread;
+
+        /// <summary>
+        /// Internal guard preventing recursive IPC calls when running inside the daemon worker.
+        /// </summary>
+        public static bool DisableIpcForCurrentThread
+        {
+            get => _disableIpcForCurrentThread;
+            set => _disableIpcForCurrentThread = value;
+        }
+
+        private static bool ShouldUseIpc => UseIpc && !_disableIpcForCurrentThread;
+
+        /// <summary>
+        /// Named pipe identifier used for IPC communication.
+        /// </summary>
+        public static string PipeName
+        {
+            get => NamedPipeClient.PipeName;
+            set => NamedPipeClient.PipeName = value;
+        }
+
+        /// <summary>
+        /// Idle timeout in minutes for the background daemon before auto-terminating.
+        /// </summary>
+        public static int DaemonIdleTimeoutMinutes { get; set; } = 5;
+
+        /// <summary>
+        /// Parent process ID for daemon watchdog monitoring. If 0, automatically detects host runner/PAD PID.
+        /// </summary>
+        public static int DaemonParentPid { get; set; } = 0;
+
+        /// <summary>
+        /// Automatically start AS400Daemon.exe if the named pipe is not active. Default is true.
+        /// </summary>
+        public static bool AutoStartDaemon { get; set; } = true;
+
+        /// <summary>
+        /// Explicit path to AS400Daemon.exe. If null, auto-discovered in DLL directory.
+        /// </summary>
+        public static string DaemonExecutablePath { get; set; } = null;
+
+        /// <summary>
+        /// Number of currently active sessions in this process.
+        /// </summary>
+        public static int ActiveSessionCount => _sessions.Count;
+
         static AS400Driver()
         {
             try
@@ -31,6 +87,31 @@ namespace AS400Automation
                 AppDomain.CurrentDomain.DomainUnload += (s, e) => DisconnectAll();
             }
             catch { }
+        }
+
+        /// <summary>
+        /// Explicitly signals the background AS400 daemon to disconnect all sessions and terminate.
+        /// </summary>
+        public static bool StopDaemon(string pipeName = null)
+        {
+            string oldPipe = NamedPipeClient.PipeName;
+            if (!string.IsNullOrWhiteSpace(pipeName))
+            {
+                NamedPipeClient.PipeName = pipeName;
+            }
+            try
+            {
+                var resp = NamedPipeClient.SendRequest(new IpcRequest("STOP_DAEMON"), 3000);
+                return resp != null && resp.Success;
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                NamedPipeClient.PipeName = oldPipe;
+            }
         }
 
         #region Session Management
@@ -54,6 +135,23 @@ namespace AS400Automation
         /// </summary>
         public static string ConnectWithTerminalType(string host, int port = 23, bool useSsl = false, string terminalType = Tn5250Constants.TERMINAL_MODEL_IBM3179, int timeoutSeconds = 30)
         {
+            if (ShouldUseIpc)
+            {
+                var resp = NamedPipeClient.SendRequest(
+                    new IpcRequest("CONNECT", null, host, port.ToString(), useSsl.ToString(), terminalType, timeoutSeconds.ToString()),
+                    (timeoutSeconds + 5) * 1000);
+
+                if (resp != null && resp.Success && !string.IsNullOrEmpty(resp.Data))
+                {
+                    return resp.Data;
+                }
+
+                string err = resp?.ErrorMessage ?? NamedPipeClient.LastError ?? "IPC connection failed.";
+                SetError(null, err);
+                if (ThrowOnError) throw new AS400Exception(AS400ErrorCode.ConnectionFailed, err);
+                return string.Empty;
+            }
+
             string sessionId = "AS400_" + Guid.NewGuid().ToString("N").Substring(0, 8);
             var session = new SessionInstance(sessionId);
 
@@ -82,8 +180,15 @@ namespace AS400Automation
         public static bool Disconnect(string sessionId)
         {
             if (string.IsNullOrWhiteSpace(sessionId)) return false;
+            string cleanId = sessionId.Trim();
 
-            if (_sessions.TryRemove(sessionId, out SessionInstance session))
+            if (ShouldUseIpc)
+            {
+                var resp = NamedPipeClient.SendRequest(new IpcRequest("DISCONNECT", cleanId));
+                return resp != null && resp.Success && bool.TryParse(resp.Data, out bool b) && b;
+            }
+
+            if (_sessions.TryRemove(cleanId, out SessionInstance session))
             {
                 try
                 {
@@ -93,7 +198,7 @@ namespace AS400Automation
                 }
                 catch (Exception ex)
                 {
-                    SetError(sessionId, ex.Message);
+                    SetError(cleanId, ex.Message);
                     return false;
                 }
             }
@@ -106,6 +211,12 @@ namespace AS400Automation
         /// </summary>
         public static void DisconnectAll()
         {
+            if (ShouldUseIpc)
+            {
+                NamedPipeClient.SendRequest(new IpcRequest("DISCONNECTALL", null));
+                return;
+            }
+
             foreach (var kvp in _sessions)
             {
                 try
@@ -124,7 +235,15 @@ namespace AS400Automation
         public static bool IsConnected(string sessionId)
         {
             if (string.IsNullOrWhiteSpace(sessionId)) return false;
-            if (_sessions.TryGetValue(sessionId, out SessionInstance session))
+            string cleanId = sessionId.Trim();
+
+            if (ShouldUseIpc)
+            {
+                var resp = NamedPipeClient.SendRequest(new IpcRequest("ISCONNECTED", cleanId));
+                return resp != null && resp.Success && bool.TryParse(resp.Data, out bool b) && b;
+            }
+
+            if (_sessions.TryGetValue(cleanId, out SessionInstance session))
             {
                 return session.IsConnected;
             }
@@ -145,15 +264,36 @@ namespace AS400Automation
         /// <returns>True on success.</returns>
         public static bool SendKeys(string sessionId, string text = "", string controlKey = "Enter")
         {
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                if (ThrowOnError) throw new AS400Exception(AS400ErrorCode.SessionNotFound, "SessionId cannot be null or empty.");
+                return false;
+            }
+            string cleanId = sessionId.Trim();
+
+            if (ShouldUseIpc)
+            {
+                var resp = NamedPipeClient.SendRequest(new IpcRequest("SENDKEYS", cleanId, text ?? string.Empty, controlKey ?? "Enter"));
+                if (resp != null && resp.Success)
+                {
+                    return true;
+                }
+                string err = resp?.ErrorMessage ?? NamedPipeClient.LastError ?? "IPC SendKeys failed.";
+                SetError(cleanId, err);
+                int code = resp != null && resp.ErrorCode != 0 ? resp.ErrorCode : (int)AS400ErrorCode.SendKeysFailed;
+                if (ThrowOnError) throw new AS400Exception((AS400ErrorCode)code, err);
+                return false;
+            }
+
             try
             {
-                ClearError(sessionId);
-                var session = GetSession(sessionId);
+                ClearError(cleanId);
+                var session = GetSession(cleanId);
                 return session.SendKeys(text, controlKey);
             }
             catch (Exception ex)
             {
-                SetError(sessionId, ex.Message);
+                SetError(cleanId, ex.Message);
                 if (ThrowOnError) throw;
                 return false;
             }
@@ -175,15 +315,33 @@ namespace AS400Automation
         /// </summary>
         public static bool SetCursor(string sessionId, int row, int col)
         {
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                if (ThrowOnError) throw new AS400Exception(AS400ErrorCode.SessionNotFound, "SessionId cannot be null or empty.");
+                return false;
+            }
+            string cleanId = sessionId.Trim();
+
+            if (ShouldUseIpc)
+            {
+                var resp = NamedPipeClient.SendRequest(new IpcRequest("SETCURSOR", cleanId, row.ToString(), col.ToString()));
+                if (resp != null && resp.Success) return true;
+                string err = resp?.ErrorMessage ?? NamedPipeClient.LastError ?? "IPC SetCursor failed.";
+                SetError(cleanId, err);
+                int code = resp != null && resp.ErrorCode != 0 ? resp.ErrorCode : (int)AS400ErrorCode.InvalidCoordinate;
+                if (ThrowOnError) throw new AS400Exception((AS400ErrorCode)code, err);
+                return false;
+            }
+
             try
             {
-                ClearError(sessionId);
-                var session = GetSession(sessionId);
+                ClearError(cleanId);
+                var session = GetSession(cleanId);
                 return session.SetCursor(row, col);
             }
             catch (Exception ex)
             {
-                SetError(sessionId, ex.Message);
+                SetError(cleanId, ex.Message);
                 if (ThrowOnError) throw;
                 return false;
             }
@@ -194,15 +352,33 @@ namespace AS400Automation
         /// </summary>
         public static bool WriteAt(string sessionId, int row, int col, string text)
         {
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                if (ThrowOnError) throw new AS400Exception(AS400ErrorCode.SessionNotFound, "SessionId cannot be null or empty.");
+                return false;
+            }
+            string cleanId = sessionId.Trim();
+
+            if (ShouldUseIpc)
+            {
+                var resp = NamedPipeClient.SendRequest(new IpcRequest("WRITEAT", cleanId, row.ToString(), col.ToString(), text ?? string.Empty));
+                if (resp != null && resp.Success) return true;
+                string err = resp?.ErrorMessage ?? NamedPipeClient.LastError ?? "IPC WriteAt failed.";
+                SetError(cleanId, err);
+                int code = resp != null && resp.ErrorCode != 0 ? resp.ErrorCode : (int)AS400ErrorCode.InvalidCoordinate;
+                if (ThrowOnError) throw new AS400Exception((AS400ErrorCode)code, err);
+                return false;
+            }
+
             try
             {
-                ClearError(sessionId);
-                var session = GetSession(sessionId);
+                ClearError(cleanId);
+                var session = GetSession(cleanId);
                 return session.WriteAt(row, col, text);
             }
             catch (Exception ex)
             {
-                SetError(sessionId, ex.Message);
+                SetError(cleanId, ex.Message);
                 if (ThrowOnError) throw;
                 return false;
             }
@@ -217,15 +393,33 @@ namespace AS400Automation
         /// </summary>
         public static string GetScreen(string sessionId)
         {
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                if (ThrowOnError) throw new AS400Exception(AS400ErrorCode.SessionNotFound, "SessionId cannot be null or empty.");
+                return string.Empty;
+            }
+            string cleanId = sessionId.Trim();
+
+            if (ShouldUseIpc)
+            {
+                var resp = NamedPipeClient.SendRequest(new IpcRequest("GETSCREEN", cleanId));
+                if (resp != null && resp.Success) return resp.Data;
+                string err = resp?.ErrorMessage ?? NamedPipeClient.LastError ?? "IPC GetScreen failed.";
+                SetError(cleanId, err);
+                int code = resp != null && resp.ErrorCode != 0 ? resp.ErrorCode : (int)AS400ErrorCode.ScreenReadFailed;
+                if (ThrowOnError) throw new AS400Exception((AS400ErrorCode)code, err);
+                return string.Empty;
+            }
+
             try
             {
-                ClearError(sessionId);
-                var session = GetSession(sessionId);
+                ClearError(cleanId);
+                var session = GetSession(cleanId);
                 return session.GetScreen();
             }
             catch (Exception ex)
             {
-                SetError(sessionId, ex.Message);
+                SetError(cleanId, ex.Message);
                 if (ThrowOnError) throw;
                 return string.Empty;
             }
@@ -236,15 +430,33 @@ namespace AS400Automation
         /// </summary>
         public static string ReadText(string sessionId, int row, int col, int length)
         {
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                if (ThrowOnError) throw new AS400Exception(AS400ErrorCode.SessionNotFound, "SessionId cannot be null or empty.");
+                return string.Empty;
+            }
+            string cleanId = sessionId.Trim();
+
+            if (ShouldUseIpc)
+            {
+                var resp = NamedPipeClient.SendRequest(new IpcRequest("READTEXT", cleanId, row.ToString(), col.ToString(), length.ToString()));
+                if (resp != null && resp.Success) return resp.Data;
+                string err = resp?.ErrorMessage ?? NamedPipeClient.LastError ?? "IPC ReadText failed.";
+                SetError(cleanId, err);
+                int code = resp != null && resp.ErrorCode != 0 ? resp.ErrorCode : (int)AS400ErrorCode.InvalidCoordinate;
+                if (ThrowOnError) throw new AS400Exception((AS400ErrorCode)code, err);
+                return string.Empty;
+            }
+
             try
             {
-                ClearError(sessionId);
-                var session = GetSession(sessionId);
+                ClearError(cleanId);
+                var session = GetSession(cleanId);
                 return session.ReadText(row, col, length);
             }
             catch (Exception ex)
             {
-                SetError(sessionId, ex.Message);
+                SetError(cleanId, ex.Message);
                 if (ThrowOnError) throw;
                 return string.Empty;
             }
@@ -255,15 +467,71 @@ namespace AS400Automation
         /// </summary>
         public static string ReadField(string sessionId, int row, int col)
         {
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                if (ThrowOnError) throw new AS400Exception(AS400ErrorCode.SessionNotFound, "SessionId cannot be null or empty.");
+                return string.Empty;
+            }
+            string cleanId = sessionId.Trim();
+
+            if (ShouldUseIpc)
+            {
+                var resp = NamedPipeClient.SendRequest(new IpcRequest("READFIELD", cleanId, row.ToString(), col.ToString()));
+                if (resp != null && resp.Success) return resp.Data;
+                string err = resp?.ErrorMessage ?? NamedPipeClient.LastError ?? "IPC ReadField failed.";
+                SetError(cleanId, err);
+                int code = resp != null && resp.ErrorCode != 0 ? resp.ErrorCode : (int)AS400ErrorCode.InvalidCoordinate;
+                if (ThrowOnError) throw new AS400Exception((AS400ErrorCode)code, err);
+                return string.Empty;
+            }
+
             try
             {
-                ClearError(sessionId);
-                var session = GetSession(sessionId);
+                ClearError(cleanId);
+                var session = GetSession(cleanId);
                 return session.ReadField(row, col);
             }
             catch (Exception ex)
             {
-                SetError(sessionId, ex.Message);
+                SetError(cleanId, ex.Message);
+                if (ThrowOnError) throw;
+                return string.Empty;
+            }
+        }
+
+        /// <summary>
+        /// Reads the system message line (Row 24 on 24x80, or Row 27 on 27x132 screens)
+        /// where AS400 / IBM i outputs status, error messages, and CPF warning codes.
+        /// </summary>
+        public static string GetSystemMessage(string sessionId)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                if (ThrowOnError) throw new AS400Exception(AS400ErrorCode.SessionNotFound, "SessionId cannot be null or empty.");
+                return string.Empty;
+            }
+            string cleanId = sessionId.Trim();
+
+            if (ShouldUseIpc)
+            {
+                var resp = NamedPipeClient.SendRequest(new IpcRequest("GETSYSTEMMESSAGE", cleanId));
+                if (resp != null && resp.Success) return resp.Data;
+                string err = resp?.ErrorMessage ?? NamedPipeClient.LastError ?? "IPC GetSystemMessage failed.";
+                SetError(cleanId, err);
+                int code = resp != null && resp.ErrorCode != 0 ? resp.ErrorCode : (int)AS400ErrorCode.ScreenReadFailed;
+                if (ThrowOnError) throw new AS400Exception((AS400ErrorCode)code, err);
+                return string.Empty;
+            }
+
+            try
+            {
+                ClearError(cleanId);
+                var session = GetSession(cleanId);
+                return session.GetSystemMessage();
+            }
+            catch (Exception ex)
+            {
+                SetError(cleanId, ex.Message);
                 if (ThrowOnError) throw;
                 return string.Empty;
             }
@@ -274,15 +542,40 @@ namespace AS400Automation
         /// </summary>
         public static (int Row, int Col) GetCursorPosition(string sessionId)
         {
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                if (ThrowOnError) throw new AS400Exception(AS400ErrorCode.SessionNotFound, "SessionId cannot be null or empty.");
+                return (1, 1);
+            }
+            string cleanId = sessionId.Trim();
+
+            if (ShouldUseIpc)
+            {
+                var resp = NamedPipeClient.SendRequest(new IpcRequest("GETCURSORPOSITION", cleanId));
+                if (resp != null && resp.Success && !string.IsNullOrEmpty(resp.Data))
+                {
+                    string[] parts = resp.Data.Split(',');
+                    if (parts.Length == 2 && int.TryParse(parts[0], out int r) && int.TryParse(parts[1], out int c))
+                    {
+                        return (r, c);
+                    }
+                }
+                string err = resp?.ErrorMessage ?? NamedPipeClient.LastError ?? "IPC GetCursorPosition failed.";
+                SetError(cleanId, err);
+                int code = resp != null && resp.ErrorCode != 0 ? resp.ErrorCode : (int)AS400ErrorCode.ScreenReadFailed;
+                if (ThrowOnError) throw new AS400Exception((AS400ErrorCode)code, err);
+                return (1, 1);
+            }
+
             try
             {
-                ClearError(sessionId);
-                var session = GetSession(sessionId);
+                ClearError(cleanId);
+                var session = GetSession(cleanId);
                 return session.GetCursorPosition();
             }
             catch (Exception ex)
             {
-                SetError(sessionId, ex.Message);
+                SetError(cleanId, ex.Message);
                 if (ThrowOnError) throw;
                 return (1, 1);
             }
@@ -317,20 +610,41 @@ namespace AS400Automation
         /// <returns>True if found before timeout; otherwise false.</returns>
         public static bool WaitForText(string sessionId, string targetText, int timeoutSeconds = 10)
         {
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                if (ThrowOnError) throw new AS400Exception(AS400ErrorCode.SessionNotFound, "SessionId cannot be null or empty.");
+                return false;
+            }
+            string cleanId = sessionId.Trim();
+
+            if (ShouldUseIpc)
+            {
+                int waitTimeoutMs = (timeoutSeconds + 5) * 1000;
+                var resp = NamedPipeClient.SendRequest(new IpcRequest("WAITFORTEXT", cleanId, targetText ?? string.Empty, timeoutSeconds.ToString()), waitTimeoutMs);
+                if (resp != null && resp.Success && bool.TryParse(resp.Data, out bool found) && found)
+                {
+                    return true;
+                }
+                string err = resp?.ErrorMessage ?? NamedPipeClient.LastError ?? $"Timeout after {timeoutSeconds}s waiting for text '{targetText}' on AS400 screen.";
+                SetError(cleanId, err);
+                if (ThrowOnError) throw new AS400Exception(AS400ErrorCode.TimeoutWaitingForText, err);
+                return false;
+            }
+
             try
             {
-                ClearError(sessionId);
-                var session = GetSession(sessionId);
+                ClearError(cleanId);
+                var session = GetSession(cleanId);
                 bool found = session.WaitForText(targetText, timeoutSeconds);
                 if (!found)
                 {
-                    SetError(sessionId, $"Timeout after {timeoutSeconds}s waiting for text '{targetText}' on AS400 screen.");
+                    SetError(cleanId, $"Timeout after {timeoutSeconds}s waiting for text '{targetText}' on AS400 screen.");
                 }
                 return found;
             }
             catch (Exception ex)
             {
-                SetError(sessionId, ex.Message);
+                SetError(cleanId, ex.Message);
                 if (ThrowOnError) throw;
                 return false;
             }
@@ -341,20 +655,41 @@ namespace AS400Automation
         /// </summary>
         public static bool WaitForScreenUpdate(string sessionId, int timeoutSeconds = 10)
         {
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                if (ThrowOnError) throw new AS400Exception(AS400ErrorCode.SessionNotFound, "SessionId cannot be null or empty.");
+                return false;
+            }
+            string cleanId = sessionId.Trim();
+
+            if (ShouldUseIpc)
+            {
+                int waitTimeoutMs = (timeoutSeconds + 5) * 1000;
+                var resp = NamedPipeClient.SendRequest(new IpcRequest("WAITFORSCREENUPDATE", cleanId, timeoutSeconds.ToString()), waitTimeoutMs);
+                if (resp != null && resp.Success && bool.TryParse(resp.Data, out bool upd) && upd)
+                {
+                    return true;
+                }
+                string err = resp?.ErrorMessage ?? NamedPipeClient.LastError ?? $"Timeout after {timeoutSeconds}s waiting for AS400 screen update.";
+                SetError(cleanId, err);
+                if (ThrowOnError) throw new AS400Exception(AS400ErrorCode.TimeoutWaitingForScreen, err);
+                return false;
+            }
+
             try
             {
-                ClearError(sessionId);
-                var session = GetSession(sessionId);
+                ClearError(cleanId);
+                var session = GetSession(cleanId);
                 bool updated = session.WaitForScreenUpdate(timeoutSeconds);
                 if (!updated)
                 {
-                    SetError(sessionId, $"Timeout after {timeoutSeconds}s waiting for AS400 screen update.");
+                    SetError(cleanId, $"Timeout after {timeoutSeconds}s waiting for AS400 screen update.");
                 }
                 return updated;
             }
             catch (Exception ex)
             {
-                SetError(sessionId, ex.Message);
+                SetError(cleanId, ex.Message);
                 if (ThrowOnError) throw;
                 return false;
             }
@@ -369,6 +704,22 @@ namespace AS400Automation
         /// </summary>
         public static string GetLastError(string sessionId = null)
         {
+            if (ShouldUseIpc)
+            {
+                if (!string.IsNullOrWhiteSpace(sessionId))
+                {
+                    var resp = NamedPipeClient.SendRequest(new IpcRequest("GETLASTERROR", sessionId.Trim()), 2000);
+                    if (resp != null && resp.Success && !string.IsNullOrEmpty(resp.Data))
+                    {
+                        return resp.Data;
+                    }
+                }
+                if (!string.IsNullOrEmpty(NamedPipeClient.LastError))
+                {
+                    return NamedPipeClient.LastError;
+                }
+            }
+
             if (!string.IsNullOrWhiteSpace(sessionId) && _sessions.TryGetValue(sessionId, out SessionInstance session))
             {
                 if (!string.IsNullOrEmpty(session.LastError))
@@ -416,9 +767,10 @@ namespace AS400Automation
                 throw new AS400Exception(AS400ErrorCode.SessionNotFound, "SessionId cannot be null or empty.");
             }
 
-            if (!_sessions.TryGetValue(sessionId, out SessionInstance session) || session == null)
+            string cleanId = sessionId.Trim();
+            if (!_sessions.TryGetValue(cleanId, out SessionInstance session) || session == null)
             {
-                throw new AS400Exception(AS400ErrorCode.SessionNotFound, $"AS400 session '{sessionId}' was not found.");
+                throw new AS400Exception(AS400ErrorCode.SessionNotFound, $"AS400 session '{cleanId}' was not found.");
             }
 
             return session;

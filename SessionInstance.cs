@@ -147,6 +147,16 @@ namespace AS400Automation
             }
         }
 
+        public string GetSystemMessage()
+        {
+            lock (_sessionLock)
+            {
+                LastAccessedAt = DateTime.UtcNow;
+                EnsureConnected();
+                return ScreenBuffer.GetSystemMessage();
+            }
+        }
+
         public (int Row, int Col) GetCursorPosition()
         {
             lock (_sessionLock)

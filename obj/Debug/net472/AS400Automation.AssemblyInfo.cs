@@ -15,7 +15,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyDescriptionAttribute(("Standalone C# TN5250 Telnet client library for IBM i / AS400 terminal automation " +
     "via PowerShell and Power Automate Desktop"))]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+08ddc0426d3e8e1333f0fcb8d6ef16587204b085")]
 [assembly: System.Reflection.AssemblyProductAttribute("AS400 TN5250 Client for Power Automate Desktop")]
 [assembly: System.Reflection.AssemblyTitleAttribute("AS400Automation")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

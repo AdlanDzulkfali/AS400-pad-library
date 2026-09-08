@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Builds the AS400Automation library in Release mode for Power Automate Desktop.
+    Builds the AS400Automation library and AS400Daemon executable in Release mode for Power Automate Desktop.
 
 .DESCRIPTION
-    Compiles AS400Automation.csproj targeting .NET Framework 4.7.2 and .NET Standard 2.0.
-    Verifies output artifacts and displays assembly information and SHA256 checksums.
+    Compiles AS400Automation.csproj (net472 & netstandard2.0) and AS400Automation.Daemon.csproj (net472).
+    Generates ready-to-deploy artifacts: AS400Automation.dll, AS400Daemon.exe, and distribution zip.
 
 .PARAMETER Configuration
     Build configuration: Release (default) or Debug.
@@ -26,12 +26,8 @@ Write-Host "  AS400 / IBM i TN5250 Standalone Library Build Process" -Foreground
 Write-Host "============================================================" -ForegroundColor Cyan
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$projectFile = Join-Path $scriptDir "AS400Automation.csproj"
-
-if (-not (Test-Path $projectFile)) {
-    Write-Error "Project file not found: $projectFile"
-    exit 1
-}
+$libProject = Join-Path $scriptDir "AS400Automation.csproj"
+$daemonProject = Join-Path (Split-Path -Parent $scriptDir) "AS400Automation.Daemon\AS400Automation.Daemon.csproj"
 
 # Verify dotnet CLI
 try {
@@ -42,16 +38,25 @@ try {
     exit 1
 }
 
-Write-Host "[*] Compiling project in $Configuration mode..." -ForegroundColor Yellow
-& dotnet clean $projectFile -c $Configuration | Out-Null
-& dotnet build $projectFile -c $Configuration --nologo
-
+Write-Host "[*] Compiling library project ($libProject) in $Configuration mode..." -ForegroundColor Yellow
+& dotnet build $libProject -c $Configuration --nologo
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "dotnet build failed with exit code $LASTEXITCODE"
+    Write-Error "Library build failed with exit code $LASTEXITCODE"
     exit $LASTEXITCODE
 }
 
-$net472Dll = Join-Path $scriptDir "bin\$Configuration\net472\AS400Automation.dll"
+if (Test-Path $daemonProject) {
+    Write-Host "[*] Compiling daemon project ($daemonProject) in $Configuration mode..." -ForegroundColor Yellow
+    & dotnet build $daemonProject -c $Configuration --nologo
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Daemon build failed with exit code $LASTEXITCODE"
+        exit $LASTEXITCODE
+    }
+}
+
+$net472Dir = Join-Path $scriptDir "bin\$Configuration\net472"
+$net472Dll = Join-Path $net472Dir "AS400Automation.dll"
+$net472Exe = Join-Path $net472Dir "AS400Daemon.exe"
 $netStdDll = Join-Path $scriptDir "bin\$Configuration\netstandard2.0\AS400Automation.dll"
 
 Write-Host "`n============================================================" -ForegroundColor Cyan
@@ -65,8 +70,15 @@ if (Test-Path $net472Dll) {
     Write-Host $item.FullName
     Write-Host "     Size: $([math]::Round($item.Length / 1KB, 2)) KB" -ForegroundColor Gray
     Write-Host "     SHA256: $($hash.Hash)" -ForegroundColor Gray
-} else {
-    Write-Warning "Target net472 output not found at: $net472Dll"
+}
+
+if (Test-Path $net472Exe) {
+    $item = Get-Item $net472Exe
+    $hash = Get-FileHash -Path $net472Exe -Algorithm SHA256
+    Write-Host "[OK] IPC Background Daemon:     " -ForegroundColor Green -NoNewline
+    Write-Host $item.FullName
+    Write-Host "     Size: $([math]::Round($item.Length / 1KB, 2)) KB" -ForegroundColor Gray
+    Write-Host "     SHA256: $($hash.Hash)" -ForegroundColor Gray
 }
 
 if (Test-Path $netStdDll) {
@@ -78,12 +90,29 @@ if (Test-Path $netStdDll) {
     Write-Host "     SHA256: $($hash.Hash)" -ForegroundColor Gray
 }
 
-Write-Host "`n[SUCCESS] AS400Automation.dll is ready for Power Automate Desktop!" -ForegroundColor Green
+# Create deployment ZIP bundle
+$zipPath = Join-Path $net472Dir "AS400Automation.zip"
+if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+$filesToZip = @($net472Dll)
+if (Test-Path $net472Exe) { $filesToZip += $net472Exe }
+Compress-Archive -Path $filesToZip -DestinationPath $zipPath -Force
+
+Write-Host "`n[ZIP] Distribution package created: $zipPath" -ForegroundColor Cyan
+
 Write-Host @"
-Power Automate Desktop Usage:
-  In PAD designer, add action 'Run PowerShell script' and call:
-  Add-Type -Path "$net472Dll"
-  `$sid = [AS400Automation.AS400Driver]::Connect("192.168.1.100", 23)
-  [AS400Automation.AS400Driver]::WaitForText(`$sid, "Sign On", 15)
-  ...
-"@ -ForegroundColor Yellow
+
+[SUCCESS] Build Complete!
+
+DEPLOYMENT INSTRUCTIONS FOR POWER AUTOMATE DESKTOP:
+1. Copy both files to a folder on your automation machine (e.g. C:\AS400Automation\):
+   - AS400Automation.dll
+   - AS400Daemon.exe  (Required for multi-step PowerShell actions)
+
+2. If using separate 'Run PowerShell script' actions in PAD:
+   - Always include in every step:
+     Add-Type -Path "C:\AS400Automation\AS400Automation.dll"
+     [AS400Automation.AS400Driver]::UseIpc = `$true
+
+   - The DLL will automatically launch AS400Daemon.exe in the background.
+   - The daemon automatically closes when PAD closes or after 5 minutes of idle time.
+"@ -ForegroundColor Green
